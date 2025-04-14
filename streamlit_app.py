@@ -4,14 +4,15 @@ import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
 import numpy as np
-import gdown
+import requests
 import os
+from io import BytesIO
 
 # STL-10 class names
 CLASSES = ['airplane', 'bird', 'car', 'cat', 'deer', 
            'dog', 'horse', 'monkey', 'ship', 'truck']
 
-# Define the model architecture (must match training)
+# Define the model architecture
 class DeFixMatchSTLModel(nn.Module):
     def __init__(self, num_classes=10):
         super(DeFixMatchSTLModel, self).__init__()
@@ -40,11 +41,41 @@ class DeFixMatchSTLModel(nn.Module):
 
 @st.cache_resource
 def download_model():
-    """Download the model weights from Google Drive if not already present"""
+    """Download the model weights with proper Google Drive file handling"""
     model_path = 'STL_ReFix.pt'
+    
     if not os.path.exists(model_path):
-        url = "https://drive.google.com/uc?id=1IteLug8tGJdmzHQMkveOYxRYaKFmt5Zz"
-        gdown.download(url, model_path, quiet=False)
+        # Google Drive direct download link (replace with your actual file ID)
+        file_id = '1IteLug8tGJdmzHQMkveOYxRYaKFmt5Zz'
+        url = f'https://drive.google.com/uc?export=download&id={file_id}'
+        
+        st.info("Downloading model weights... (This may take a few minutes)")
+        
+        try:
+            session = requests.Session()
+            response = session.get(url, stream=True)
+            
+            # Handle large file download
+            token = None
+            for key, value in response.cookies.items():
+                if key.startswith('download_warning'):
+                    token = value
+            
+            if token:
+                params = {'id': file_id, 'confirm': token}
+                response = session.get(url, params=params, stream=True)
+            
+            # Save the file
+            with open(model_path, 'wb') as f:
+                for chunk in response.iter_content(1024*1024):  # 1MB chunks
+                    if chunk:
+                        f.write(chunk)
+            
+            st.success("Model downloaded successfully!")
+        except Exception as e:
+            st.error(f"Failed to download model: {str(e)}")
+            raise
+    
     return model_path
 
 @st.cache_resource
@@ -52,9 +83,15 @@ def load_model():
     """Load the model with cached weights"""
     model_path = download_model()
     model = DeFixMatchSTLModel(len(CLASSES))
-    model.load_state_dict(torch.load(model_path, map_location='cpu'))
-    model.eval()
-    return model
+    
+    try:
+        # Load the state dict (using CPU by default)
+        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        model.eval()
+        return model
+    except Exception as e:
+        st.error(f"Failed to load model: {str(e)}")
+        raise
 
 def preprocess_image(image):
     """Transform image for model input"""
@@ -71,19 +108,15 @@ def main():
     st.title("STL-10 Image Classifier")
     st.write("""
     This app classifies images into one of 10 STL-10 categories using a trained ReFixMatch model.
-    Upload an image of an airplane, bird, car, cat, deer, dog, horse, monkey, ship, or truck.
     """)
     
-    # Sidebar with info
-    st.sidebar.header("About")
-    st.sidebar.info("""
-    - Model: ReFixMatch trained on STL-10 dataset
-    - Classes: 10 common object categories
-    - Input: 96x96 RGB images
-    """)
-    
-    # Load model (cached)
-    model = load_model()
+    # Load model (with progress indicator)
+    with st.spinner("Loading model..."):
+        try:
+            model = load_model()
+        except:
+            st.error("Failed to initialize model. Please try again later.")
+            st.stop()
     
     # File uploader
     uploaded_file = st.file_uploader(
@@ -109,17 +142,12 @@ def main():
                     
             # Show top prediction
             predicted_class = max(confidences, key=confidences.get)
-            st.success(f"**Prediction:** {predicted_class} (confidence: {confidences[predicted_class]:.1%})")
+            st.success(f"**Prediction:** {predicted_class} (confidence: {confidences[predicted_class]:.1%}")
             
             # Show confidence bar chart
             st.subheader("Confidence Scores")
             st.bar_chart({k: v for k, v in sorted(confidences.items(), key=lambda item: item[1], reverse=True)})
             
-            # Show detailed probabilities
-            with st.expander("See detailed probabilities"):
-                for class_name, prob in sorted(confidences.items(), key=lambda x: -x[1]):
-                    st.write(f"▸ {class_name}: {prob:.2%}")
-                    
         except Exception as e:
             st.error(f"Error processing image: {str(e)}")
 
